@@ -16,9 +16,12 @@ import os
 
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 import db
 
@@ -33,16 +36,23 @@ SCRAPER_TIMEOUT_SECONDS = 60
 
 app = FastAPI(title="Keyword Search Backend API")
 
-# Allow the frontend (any origin, for now - a local file, Vercel, Netlify,
-# etc.) to call this API from the browser. Once the frontend has a fixed
-# production domain, tighten allow_origins to just that domain instead of
-# "*" for better security.
+# Only allow requests from our actual deployed frontend - replace with
+# your real Netlify URL (no trailing slash). This replaces the earlier
+# wildcard ("*"), which allowed ANY website to call this API from a
+# visitor's browser.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://your-site-name-here.netlify.app"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Per-IP rate limiting - protects both our Railway bill and, more
+# importantly, keeps one visitor from hammering /search and getting our
+# scraper's IP flagged/blocked by Amazon.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 class SearchRequest(BaseModel):
@@ -62,7 +72,8 @@ def health():
 
 
 @app.post("/search", response_model=SearchResponse)
-def search(req: SearchRequest):
+@limiter.limit("5/minute")
+def search(request: Request, req: SearchRequest):
     # Normalize so "Wireless Mouse" and "wireless mouse" share one cache entry.
     keyword = req.keyword.strip().lower()
     if not keyword:
@@ -78,7 +89,7 @@ def search(req: SearchRequest):
             num_products_found=cached_row["num_products_found"],
             cached=True,
         )
-    
+
     # 2. No fresh cache - log a pending row, then call the scraper and wait.
     search_id = db.create_pending_search(keyword)
     logger.info("Created pending search id=%s for keyword=%r", search_id, keyword)
