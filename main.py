@@ -17,6 +17,7 @@ import os
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import db
@@ -31,6 +32,17 @@ CACHE_MAX_AGE_HOURS = 24
 SCRAPER_TIMEOUT_SECONDS = 60
 
 app = FastAPI(title="Keyword Search Backend API")
+
+# Allow the frontend (any origin, for now - a local file, Vercel, Netlify,
+# etc.) to call this API from the browser. Once the frontend has a fixed
+# production domain, tighten allow_origins to just that domain instead of
+# "*" for better security.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class SearchRequest(BaseModel):
