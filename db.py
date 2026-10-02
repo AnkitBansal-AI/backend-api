@@ -48,6 +48,25 @@ def get_recent_search(keyword: str, max_age_hours: int = 24):
         conn.close()
 
 
+def get_search_by_id(search_id: int):
+    """Return the full row for a given search id, or None if it doesn't exist."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, keyword, status, estimated_monthly_sales_value,
+                       num_products_found, error_message, created_at, completed_at
+                FROM searches
+                WHERE id = %s;
+                """,
+                (search_id,),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
 def create_pending_search(keyword: str) -> int:
     """Insert a new row with status='pending' and return its id."""
     conn = get_connection()
