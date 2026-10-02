@@ -241,38 +241,73 @@ class ScraperBlockedError(Exception):
     """Raised when Amazon blocked the very first page (no data at all)."""
 
 
-def get_estimated_monthly_sales(keyword: str, pages: int = DEFAULT_PAGES) -> dict:
+def _target_page_count(first_page_product_count: int) -> int:
+    """
+    Amazon's search-results page inconsistently renders anywhere from
+    ~16 to ~48 product tiles on page 1 depending on the keyword, so a
+    fixed page count either wastes time re-fetching an already-dense page
+    or undercounts a sparse one. Decide how many pages are worth fetching
+    based on what page 1 actually returned:
+      - 40+ products on page 1  -> that's already a full page, stop at 1
+      - 20-39 products          -> fetch one more page (2 total)
+      - <20 products            -> sparse page, fetch two more (3 total)
+    """
+    if first_page_product_count >= PAGE1_HIGH_THRESHOLD:
+        return 1
+    elif first_page_product_count >= PAGE1_LOW_THRESHOLD:
+        return 2
+    else:
+        return 3
+
+
+def get_estimated_monthly_sales(keyword: str) -> dict:
     driver = build_driver()
     start = time.time()
     products_by_asin: dict[str, dict] = {}
     unkeyed_bought_values: list[float] = []  # rare: card has no asin at all
     pages_fetched = 0
 
+    def _collect(page_products: list[dict]) -> None:
+        for p in page_products:
+            asin = p.get("asin")
+            if asin:
+                products_by_asin.setdefault(asin, p)
+            elif p.get("bought_value") is not None:
+                unkeyed_bought_values.append(p["bought_value"])
+
     try:
-        for page_num in range(1, pages + 1):
+        # Page 1 is always fetched first; it also tells us how many more
+        # pages (if any) are worth fetching for this particular keyword.
+        html = fetch_search_page(driver, keyword, page=1)
+
+        if is_blocked_page(html):
+            raise ScraperBlockedError(
+                f"Amazon blocked the request for keyword '{keyword}' (page 1)."
+            )
+
+        page_products = parse_products(html)
+        pages_fetched = 1
+        _collect(page_products)
+
+        target_pages = _target_page_count(len(page_products))
+        logger.info(
+            "Keyword=%r: page 1 returned %d products -> targeting %d page(s) total",
+            keyword, len(page_products), target_pages,
+        )
+
+        for page_num in range(2, target_pages + 1):
+            time.sleep(PAGE_FETCH_DELAY_SECONDS)
             html = fetch_search_page(driver, keyword, page=page_num)
 
             if is_blocked_page(html):
-                if page_num == 1:
-                    raise ScraperBlockedError(
-                        f"Amazon blocked the request for keyword '{keyword}' (page 1)."
-                    )
                 break  # keep whatever was already collected from earlier pages
 
             page_products = parse_products(html)
             if not page_products:
-                break  # ran out of results before hitting the page cap
+                break  # ran out of results before hitting the target
 
-            for p in page_products:
-                asin = p.get("asin")
-                if asin:
-                    products_by_asin.setdefault(asin, p)
-                elif p.get("bought_value") is not None:
-                    unkeyed_bought_values.append(p["bought_value"])
-
+            _collect(page_products)
             pages_fetched += 1
-            if page_num < pages:
-                time.sleep(PAGE_FETCH_DELAY_SECONDS)
 
         products = list(products_by_asin.values())
         estimated_monthly_sales_value = sum(
@@ -302,7 +337,6 @@ app = FastAPI(title="Amazon Sales Estimator Microservice")
 
 class ScrapeRequest(BaseModel):
     keyword: str = Field(..., min_length=1, max_length=200)
-    pages: int = Field(default=DEFAULT_PAGES, ge=1, le=10)
 
 
 class ScrapeResponse(BaseModel):
@@ -324,9 +358,9 @@ def scrape(req: ScrapeRequest):
     if not keyword:
         raise HTTPException(status_code=400, detail="keyword must not be empty")
 
-    logger.info("Scraping keyword=%r pages=%d", keyword, req.pages)
+    logger.info("Scraping keyword=%r", keyword)
     try:
-        result = get_estimated_monthly_sales(keyword, pages=req.pages)
+        result = get_estimated_monthly_sales(keyword)
     except ScraperBlockedError as e:
         logger.warning("Blocked: %s", e)
         # 503 so the caller (your backend) knows to retry later / back off,
