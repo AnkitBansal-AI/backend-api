@@ -48,7 +48,7 @@ app = FastAPI(title="Keyword Search Backend API")
 # your real Netlify URL (no trailing slash).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://oxycommerce.netlify.app"],
+    allow_origins=["https://your-site-name-here.netlify.app"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -82,9 +82,26 @@ class SearchStatusResponse(BaseModel):
     error_message: str | None = None
 
 
+class RecentSearchItem(BaseModel):
+    keyword: str
+    estimated_monthly_sales_value: float
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/recent-searches", response_model=list[RecentSearchItem])
+def recent_searches():
+    rows = db.get_recent_completed_searches(limit=4)
+    return [
+        RecentSearchItem(
+            keyword=row["keyword"],
+            estimated_monthly_sales_value=float(row["estimated_monthly_sales_value"]),
+        )
+        for row in rows
+    ]
 
 
 def run_scrape_job(search_id: int, keyword: str) -> None:

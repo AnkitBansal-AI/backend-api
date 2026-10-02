@@ -48,6 +48,36 @@ def get_recent_search(keyword: str, max_age_hours: int = 24):
         conn.close()
 
 
+def get_recent_completed_searches(limit: int = 4):
+    """
+    Return the most recent DISTINCT keywords that completed successfully,
+    site-wide (across all visitors), most recent first. If the same
+    keyword was searched multiple times, only its latest result counts
+    once, so the list doesn't get clogged with repeats.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT keyword, estimated_monthly_sales_value, completed_at
+                FROM (
+                    SELECT DISTINCT ON (keyword)
+                        keyword, estimated_monthly_sales_value, completed_at
+                    FROM searches
+                    WHERE status = 'done'
+                    ORDER BY keyword, completed_at DESC
+                ) latest_per_keyword
+                ORDER BY completed_at DESC
+                LIMIT %s;
+                """,
+                (limit,),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
 def get_search_by_id(search_id: int):
     """Return the full row for a given search id, or None if it doesn't exist."""
     conn = get_connection()
