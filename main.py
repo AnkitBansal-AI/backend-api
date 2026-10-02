@@ -78,7 +78,7 @@ def search(req: SearchRequest):
             num_products_found=cached_row["num_products_found"],
             cached=True,
         )
-
+    
     # 2. No fresh cache - log a pending row, then call the scraper and wait.
     search_id = db.create_pending_search(keyword)
     logger.info("Created pending search id=%s for keyword=%r", search_id, keyword)
