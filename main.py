@@ -64,12 +64,21 @@ class SearchRequest(BaseModel):
     keyword: str = Field(..., min_length=1, max_length=200)
 
 
+class TopProduct(BaseModel):
+    title: str
+    price: str | None = None
+    total_sales_value: float
+    image_url: str | None = None
+
+
 class SearchStartedResponse(BaseModel):
     job_id: int
     keyword: str
     status: str  # "pending" or "done" (done only on a cache hit)
     estimated_monthly_sales_value: float | None = None
     num_products_found: int | None = None
+    top_products: list[TopProduct] | None = None
+    suggested_keywords: list[str] | None = None
     cached: bool
 
 
@@ -79,6 +88,8 @@ class SearchStatusResponse(BaseModel):
     status: str  # "pending" | "done" | "failed"
     estimated_monthly_sales_value: float | None = None
     num_products_found: int | None = None
+    top_products: list[TopProduct] | None = None
+    suggested_keywords: list[str] | None = None
     error_message: str | None = None
 
 
@@ -129,6 +140,8 @@ def run_scrape_job(search_id: int, keyword: str) -> None:
         search_id,
         estimated_monthly_sales_value=data["estimated_monthly_sales_value"],
         num_products_found=data["num_products_found"],
+        top_products=data["top_products"],
+        suggested_keywords=data["suggested_keywords"],
     )
     logger.info("Background job done: search id=%s keyword=%r", search_id, keyword)
 
@@ -150,6 +163,8 @@ def search(request: Request, req: SearchRequest, background_tasks: BackgroundTas
             status="done",
             estimated_monthly_sales_value=float(cached_row["estimated_monthly_sales_value"]),
             num_products_found=cached_row["num_products_found"],
+            top_products=cached_row["top_products"],
+            suggested_keywords=cached_row["suggested_keywords"],
             cached=True,
         )
 
@@ -183,5 +198,7 @@ def get_search_status(job_id: int):
             else None
         ),
         num_products_found=row["num_products_found"],
+        top_products=row["top_products"],
+        suggested_keywords=row["suggested_keywords"],
         error_message=row["error_message"],
     )

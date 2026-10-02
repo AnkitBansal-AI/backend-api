@@ -10,7 +10,7 @@ Wraps all Postgres access needed for the synchronous /search flow:
 import os
 
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import Json, RealDictCursor
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,7 +33,7 @@ def get_recent_search(keyword: str, max_age_hours: int = 24):
             cur.execute(
                 """
                 SELECT id, keyword, estimated_monthly_sales_value, num_products_found,
-                       created_at, completed_at
+                       top_products, suggested_keywords, created_at, completed_at
                 FROM searches
                 WHERE keyword = %s
                   AND status = 'done'
@@ -86,7 +86,8 @@ def get_search_by_id(search_id: int):
             cur.execute(
                 """
                 SELECT id, keyword, status, estimated_monthly_sales_value,
-                       num_products_found, error_message, created_at, completed_at
+                       num_products_found, top_products, suggested_keywords,
+                       error_message, created_at, completed_at
                 FROM searches
                 WHERE id = %s;
                 """,
@@ -113,7 +114,13 @@ def create_pending_search(keyword: str) -> int:
         conn.close()
 
 
-def mark_search_done(search_id: int, estimated_monthly_sales_value: float, num_products_found: int) -> None:
+def mark_search_done(
+    search_id: int,
+    estimated_monthly_sales_value: float,
+    num_products_found: int,
+    top_products: list,
+    suggested_keywords: list,
+) -> None:
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -123,10 +130,18 @@ def mark_search_done(search_id: int, estimated_monthly_sales_value: float, num_p
                 SET status = 'done',
                     estimated_monthly_sales_value = %s,
                     num_products_found = %s,
+                    top_products = %s,
+                    suggested_keywords = %s,
                     completed_at = now()
                 WHERE id = %s;
                 """,
-                (estimated_monthly_sales_value, num_products_found, search_id),
+                (
+                    estimated_monthly_sales_value,
+                    num_products_found,
+                    Json(top_products),
+                    Json(suggested_keywords),
+                    search_id,
+                ),
             )
             conn.commit()
     finally:
