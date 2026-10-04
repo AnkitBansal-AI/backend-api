@@ -69,6 +69,7 @@ class TopProduct(BaseModel):
     price: str | None = None
     total_sales_value: float
     image_url: str | None = None
+    product_url: str | None = None
 
 
 class SearchStartedResponse(BaseModel):
