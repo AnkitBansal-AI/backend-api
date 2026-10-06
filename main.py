@@ -16,19 +16,25 @@ Run locally:
     uvicorn main:app --reload --port 9000
 """
 
+import io
 import logging
 import os
+import tempfile
+import zipfile
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 import db
+from label_cropper import LabelCropError, crop_labels
 
 load_dotenv()
 
@@ -41,6 +47,7 @@ CACHE_MAX_AGE_HOURS = 24
 # on directly, so it's fine to be generous here - 112s scrapes shouldn't
 # get cut off anymore.
 SCRAPER_TIMEOUT_SECONDS = 180
+LABEL_PDF_MAX_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
 
 app = FastAPI(title="Keyword Search Backend API")
 
@@ -48,7 +55,7 @@ app = FastAPI(title="Keyword Search Backend API")
 # your real Netlify URL (no trailing slash).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://oxycommerce.netlify.app"],
+    allow_origins=["https://your-site-name-here.netlify.app"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -202,4 +209,70 @@ def get_search_status(job_id: int):
         top_products=row["top_products"],
         suggested_keywords=row["suggested_keywords"],
         error_message=row["error_message"],
+    )
+
+
+@app.post("/crop-labels")
+@limiter.limit("10/minute")
+async def crop_labels_endpoint(
+    request: Request,
+    file: UploadFile = File(...),
+    mode: str = Form(...),
+):
+    """
+    Accepts a single Flipkart order PDF + a mode ("thermal" | "a4" | "both"),
+    crops the shipping labels out of it, and returns a ZIP containing the
+    cropped label PDF(s) plus the three packing-list CSVs. Nothing is
+    stored server-side - everything happens in a temp directory that's
+    deleted automatically once the response is built, since these PDFs
+    contain customer names/addresses.
+    """
+    mode = mode.lower().strip()
+    if mode not in ("thermal", "a4", "both"):
+        raise HTTPException(status_code=400, detail='mode must be "thermal", "a4", or "both"')
+
+    # Validate it's actually a PDF - check both the declared content type
+    # and the file's own magic bytes (a renamed .txt could still claim to
+    # be a PDF via content_type, but it won't start with %PDF).
+    if file.content_type not in ("application/pdf", "application/octet-stream") and not (
+        file.filename or ""
+    ).lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    contents = await file.read()
+
+    if len(contents) > LABEL_PDF_MAX_SIZE_BYTES:
+        raise HTTPException(status_code=400, detail="File too large (max 20 MB)")
+
+    if not contents.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="This doesn't look like a valid PDF file")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        pdf_path = tmp_path / "input.pdf"
+        pdf_path.write_bytes(contents)
+
+        try:
+            output_files = crop_labels(pdf_path, mode, tmp_path)
+        except LabelCropError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        except Exception as e:
+            logger.exception("Label cropping failed")
+            raise HTTPException(status_code=500, detail=f"Processing failed: {e}")
+
+        # Build the ZIP in memory while the temp dir (and its files) still
+        # exist; everything on disk is deleted the moment this `with`
+        # block exits, right after this.
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for output_path in output_files:
+                zf.write(output_path, arcname=output_path.name)
+        zip_buffer.seek(0)
+
+    logger.info("Label cropping done: mode=%r, %d output file(s)", mode, len(output_files))
+
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=cropped_labels.zip"},
     )
