@@ -55,7 +55,7 @@ app = FastAPI(title="Keyword Search Backend API")
 # your real Netlify URL (no trailing slash).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://your-site-name-here.netlify.app"],
+    allow_origins=["https://oxycommerce.netlify.app"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
